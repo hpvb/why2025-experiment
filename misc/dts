@@ -1,0 +1,139 @@
+/dts-v1/;
+
+/ {
+    #address-cells = <1>;
+    #size-cells = <1>;
+    compatible = "espressif,esp32-p4";
+    model = "Espressif ESP32-P4";
+
+    chosen {
+        stdout-path = "serial0:115200n8";
+    };
+
+    aliases {
+        serial0 = &uart0;
+    };
+
+    cpus {
+        #address-cells = <1>;
+        #size-cells = <0>;
+        
+        cpu0: cpu@0 {
+            compatible = "espressif,p4", "riscv";
+            device_type = "cpu";
+            reg = <0>;
+            riscv,isa = "rv32imafc";
+            mmu-type = "riscv,sv32";
+            status = "okay";
+            
+            cpu0_intc: interrupt-controller {
+                #interrupt-cells = <1>;
+                compatible = "riscv,cpu-intc";
+                interrupt-controller;
+            };
+        };
+        
+        cpu1: cpu@1 {
+            compatible = "espressif,p4", "riscv";
+            device_type = "cpu";
+            reg = <1>;
+            riscv,isa = "rv32imafc";
+            mmu-type = "riscv,sv32";
+            status = "okay";
+            
+            cpu1_intc: interrupt-controller {
+                #interrupt-cells = <1>;
+                compatible = "riscv,cpu-intc";
+                interrupt-controller;
+            };
+        };
+    };
+
+    /* Memory specification based on soc.h */
+    memory@4ff00000 {
+        device_type = "memory";
+        reg = <0x4ff00000 0xc0000>;
+    };
+
+    extmem: memory@48000000 {
+        device_type = "memory";
+        reg = <0x48000000 0x4000000>; /* FIXME: Probably wrong */
+    };
+
+    clocks {
+        xtal: xtal {
+            compatible = "fixed-clock";
+            #clock-cells = <0>;
+            clock-frequency = <40000000>; /* FIXME: Probably wrong */
+        };
+    };
+
+    soc {
+        #address-cells = <1>;
+        #size-cells = <1>;
+        compatible = "espressif,esp32-p4-soc", "simple-bus";
+        ranges;
+
+        interrupt-controller@50126000 {
+            compatible = "espressif,esp32-p4-intc", "riscv,plic0";
+            #interrupt-cells = <1>;
+            interrupt-controller;
+            reg = <0x50116000 0x1000>;  /* DR_REG_INTR_BASE */
+            riscv,ndev = <171>;  /* ETS_MAX_INTR_SOURCE */
+            interrupts-extended = <&cpu0_intc 11>, <&cpu1_intc 11>;
+        };
+
+        /* UART0 */
+        uart0: serial@5000a000 {
+            compatible = "espressif,esp32-uart";
+            reg = <0x5000a000 0x1000>; /* DR_REG_UART0_BASE */
+            interrupts = <ETS_UART0_INTR_SOURCE>;
+            interrupt-parent = <&intc>;
+            clocks = <&xtal>;
+            status = "okay";
+        };
+
+        uart1: serial@5000b000 {
+            compatible = "espressif,esp32-uart";
+            reg = <0x5000b000 0x1000>; /* DR_REG_UART1_BASE */
+            interrupts = <ETS_UART1_INTR_SOURCE>;
+            interrupt-parent = <&intc>;
+            clocks = <&xtal>;
+            status = "okay";
+        };
+
+        gpio: gpio@50020000 {
+            compatible = "espressif,esp32-gpio";
+            reg = <0x50020000 0x1000>; /* DR_REG_GPIO_BASE */
+            interrupts = <ETS_GPIO_INTR0_SOURCE>;
+            interrupt-parent = <&intc>;
+            gpio-controller;
+            #gpio-cells = <2>;
+            ngpios = <55>; /* 55 GPIOs, probably */
+        };
+
+        timer@50022000 {
+            compatible = "espressif,esp32-systimer";
+            reg = <0x50022000 0x1000>; /* DR_REG_SYSTIMER_BASE */
+            interrupts = <ETS_SYSTIMER_TARGET0_INTR_SOURCE>;
+            interrupt-parent = <&intc>;
+        };
+
+        timer0: timer@50002000 {
+            compatible = "espressif,esp32-timer";
+            reg = <0x50002000 0x1000>; /* DR_REG_TIMG0_BASE */
+            interrupts = <ETS_TG0_T0_INTR_SOURCE>;
+            interrupt-parent = <&intc>;
+        };
+
+        timer1: timer@50003000 {
+            compatible = "espressif,esp32-timer";
+            reg = <0x50003000 0x1000>; /* DR_REG_TIMG1_BASE */
+            interrupts = <ETS_TG1_T0_INTR_SOURCE>;
+            interrupt-parent = <&intc>;
+        };
+
+	/* TODO SPI,I2C,SPIRAM... */
+
+    };
+};
