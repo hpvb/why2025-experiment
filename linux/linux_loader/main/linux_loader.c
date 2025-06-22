@@ -10,7 +10,7 @@
 static const char *TAG = "linux_loader";
 
 // Standard RISC-V Linux load address
-#define LINUX_LOAD_ADDR     0x80000000
+#define LINUX_LOAD_ADDR     0x48000aa0
 #define LINUX_ENTRY_OFFSET  0x00000000  // Kernel entry point offset
 
 // Minimal SBI implementation
@@ -88,11 +88,21 @@ void app_main(void)
 
     ESP_LOGI(TAG, "Linux loaded successfully to PSRAM");
 
+#if 0
+    size_t size;
+    esp_mmu_map_get_max_consecutive_free_block_size(MMU_MEM_CAP_EXEC | MMU_MEM_CAP_READ, MMU_TARGET_PSRAM0, &size);
+    ESP_LOGI(TAG, "esp_mmu_map_get_max_consecutive_free_block_size : %zi", size);
+
+    if (size < linux_partition->size) {
+        ESP_LOGE(TAG, "Not enough free pages in the MMU");
+	return;
+    }
+
     // CRITICAL: Map PSRAM to the virtual address Linux expects (0x80000000)
     void* virtual_addr = NULL;
     esp_err_t map_ret = esp_mmu_map((uint32_t)linux_load_addr, linux_partition->size,
                                    MMU_TARGET_PSRAM0,
-                                   MMU_MEM_CAP_EXEC | MMU_MEM_CAP_READ | MMU_MEM_CAP_WRITE,
+                                   MMU_MEM_CAP_EXEC,
                                    0,  // flags
                                    &virtual_addr);
 
@@ -110,6 +120,7 @@ void app_main(void)
                  virtual_addr, LINUX_LOAD_ADDR);
         ESP_LOGW(TAG, "This may cause kernel boot issues");
     }
+#endif
 
     // Prepare boot parameters according to RISC-V Linux boot protocol
     // a0 = hartid (hardware thread ID, usually 0 for single core)
@@ -121,7 +132,7 @@ void app_main(void)
     ESP_LOGI(TAG, "hartid: %lu, dtb_addr: %lu", hartid, dtb_addr);
 
     // Critical: Use the mapped virtual address, not the physical PSRAM address
-    void* kernel_entry = virtual_addr;
+    void* kernel_entry = linux_load_addr;
 
     ESP_LOGI(TAG, "Kernel entry point: %p", kernel_entry);
 
