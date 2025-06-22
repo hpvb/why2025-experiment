@@ -6,4 +6,5 @@ esptool -b 921600 --no-stub \
         0x2000 bootloader.bin \
         0x10000 arch/riscv/boot/Image \
         0x8000 partition-table.bin
+ picocom -q -b 115200 /dev/ttyUSB0
 
