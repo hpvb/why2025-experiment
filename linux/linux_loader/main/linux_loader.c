@@ -10,7 +10,7 @@
 static const char *TAG = "linux_loader";
 
 // Standard RISC-V Linux load address
-#define LINUX_LOAD_ADDR     0x48000aa0
+#define LINUX_LOAD_ADDR     0x48010000
 #define LINUX_ENTRY_OFFSET  0x00000000  // Kernel entry point offset
 
 // Minimal SBI implementation
