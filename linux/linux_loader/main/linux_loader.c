@@ -5,7 +5,7 @@
 #include "esp_log.h"
 #include "esp_psram.h"
 #include "esp_heap_caps.h"
-#include "esp_mmu_map.h"  // For MMU mapping functions
+#include "esp_mmu_map.h"
 
 static const char *TAG = "linux_loader";
 
@@ -18,6 +18,20 @@ static const char *TAG = "linux_loader";
 #define SBI_CONSOLE_PUTCHAR 0x1
 #define SBI_CONSOLE_GETCHAR 0x2
 #define SBI_SHUTDOWN 0x8
+
+struct riscv_image_header {
+    uint32_t code0;          /* Executable code */
+    uint32_t code1;          /* Executable code */
+    uint64_t text_offset;    /* Image load offset, little endian */
+    uint64_t image_size;     /* Effective Image size, little endian */
+    uint64_t flags;          /* kernel flags, little endian */
+    uint32_t version;        /* Version of this header */
+    uint32_t res1;           /* Reserved */
+    uint64_t res2;           /* Reserved */
+    uint64_t magic;          /* Magic number, little endian, "RISCV" */
+    uint32_t magic2;         /* Magic number 2, little endian, "RSC\x05" */
+    uint32_t res3;           /* Reserved for PE COFF offset */
+};
 
 // Simple SBI call handler (very minimal implementation)
 void sbi_call_handler(unsigned long which, unsigned long arg0, unsigned long arg1, unsigned long arg2) {
@@ -33,6 +47,34 @@ void sbi_call_handler(unsigned long which, unsigned long arg0, unsigned long arg
             ESP_LOGW(TAG, "Unhandled SBI call: %lu", which);
             break;
     }
+}
+
+IRAM_ATTR void *malloc_psram_executable(size_t size) {
+    //Malloc from PSRAM
+    void *raw_buffer = NULL;
+    raw_buffer = heap_caps_malloc(size, MALLOC_CAP_SPIRAM);
+    if (raw_buffer == NULL) {
+        ESP_LOGE(TAG, "No mem for psram.");
+        return NULL;
+    }
+
+    //Get the physical address for allocated memory
+    esp_paddr_t psram_buf_paddr = 0;
+    mmu_target_t out_target;
+    ESP_ERROR_CHECK(esp_mmu_vaddr_to_paddr(raw_buffer, &psram_buf_paddr, &out_target));
+
+    //Map the same physical pages to instruction bus
+    const size_t low_paddr = psram_buf_paddr & ~(CONFIG_MMU_PAGE_SIZE - 1);// round down to page boundary
+    const size_t high_paddr = (psram_buf_paddr + size + CONFIG_MMU_PAGE_SIZE - 1) &
+                              ~(CONFIG_MMU_PAGE_SIZE - 1);// round up to page boundary
+    const size_t map_size = high_paddr - low_paddr;
+    void *mmap_ptr = NULL;
+    ESP_ERROR_CHECK(esp_mmu_map(0, map_size, MMU_TARGET_PSRAM0, MMU_MEM_CAP_EXEC, 0, &mmap_ptr));
+    esp_mmu_map_dump_mapped_blocks(stdout);
+
+    //Adjust the mapped pointer to point to the beginning of the buffer
+    void *exec_buf = mmap_ptr + (psram_buf_paddr - low_paddr);
+    return raw_buffer;
 }
 
 void app_main(void)
@@ -66,7 +108,7 @@ void app_main(void)
 
     // Check if we can directly use 0x80000000 (unlikely on ESP32)
     // For now, load to PSRAM and we'll handle MMU setup
-    linux_load_addr = heap_caps_aligned_alloc(0x10000, linux_partition->size, MALLOC_CAP_SPIRAM);
+    linux_load_addr = malloc_psram_executable(linux_partition->size);
 
     if (!linux_load_addr) {
         ESP_LOGE(TAG, "Failed to allocate PSRAM for Linux!");
@@ -82,45 +124,40 @@ void app_main(void)
 
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to read Linux partition: %s", esp_err_to_name(ret));
-        heap_caps_free(linux_load_addr);
         return;
     }
 
     ESP_LOGI(TAG, "Linux loaded successfully to PSRAM");
 
-#if 0
-    size_t size;
-    esp_mmu_map_get_max_consecutive_free_block_size(MMU_MEM_CAP_EXEC | MMU_MEM_CAP_READ, MMU_TARGET_PSRAM0, &size);
-    ESP_LOGI(TAG, "esp_mmu_map_get_max_consecutive_free_block_size : %zi", size);
+    const struct riscv_image_header* header = (const struct riscv_image_header*)linux_load_addr;
 
-    if (size < linux_partition->size) {
-        ESP_LOGE(TAG, "Not enough free pages in the MMU");
-	return;
+    ESP_LOGI(TAG, "=== RISC-V KERNEL IMAGE HEADER ===");
+    ESP_LOGI(TAG, "code0: 0x%08lx", header->code0);
+    ESP_LOGI(TAG, "code1: 0x%08lx", header->code1);
+    ESP_LOGI(TAG, "text_offset: 0x%08llx (%llu bytes)", header->text_offset, header->text_offset);
+    ESP_LOGI(TAG, "image_size: 0x%08llx (%llu bytes)", header->image_size, header->image_size);
+    ESP_LOGI(TAG, "flags: 0x%08llx", header->flags);
+    ESP_LOGI(TAG, "version: 0x%08lx", header->version);
+    ESP_LOGI(TAG, "magic: 0x%016llx", header->magic);
+    ESP_LOGI(TAG, "magic2: 0x%08lx", header->magic2);
+    ESP_LOGI(TAG, "================================");
+
+    // Verify magic numbers
+    if (header->magic != 0x5643534952ULL) {  // "RISCV"
+        ESP_LOGW(TAG, "Warning: Invalid RISC-V magic number!");
+    }
+    if (header->magic2 != 0x05435352UL) {   // "RSC\x05"
+        ESP_LOGW(TAG, "Warning: Invalid RISC-V magic2 number!");
     }
 
-    // CRITICAL: Map PSRAM to the virtual address Linux expects (0x80000000)
-    void* virtual_addr = NULL;
-    esp_err_t map_ret = esp_mmu_map((uint32_t)linux_load_addr, linux_partition->size,
-                                   MMU_TARGET_PSRAM0,
-                                   MMU_MEM_CAP_EXEC,
-                                   0,  // flags
-                                   &virtual_addr);
+    // Calculate the actual kernel entry point
+    const void* kernel_entry = (const char*)linux_load_addr + header->text_offset;
 
-    if (map_ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to map Linux to virtual memory: %s", esp_err_to_name(map_ret));
-        heap_caps_free(linux_load_addr);
-        return;
-    }
-
-    ESP_LOGI(TAG, "Mapped PSRAM %p to virtual address %p", linux_load_addr, virtual_addr);
-
-    // If the virtual address isn't 0x80000000, we need to try mapping specifically there
-    if ((uintptr_t)virtual_addr != LINUX_LOAD_ADDR) {
-        ESP_LOGW(TAG, "Virtual address %p doesn't match expected Linux load address 0x%x",
-                 virtual_addr, LINUX_LOAD_ADDR);
-        ESP_LOGW(TAG, "This may cause kernel boot issues");
-    }
-#endif
+    ESP_LOGI(TAG, "=== KERNEL ENTRY CALCULATION ===");
+    ESP_LOGI(TAG, "Kernel Image base: %p", linux_load_addr);
+    ESP_LOGI(TAG, "Text offset: 0x%llx (%llu bytes)", header->text_offset, header->text_offset);
+    ESP_LOGI(TAG, "Actual kernel entry: %p", kernel_entry);
+    ESP_LOGI(TAG, "===============================");
 
     // Prepare boot parameters according to RISC-V Linux boot protocol
     // a0 = hartid (hardware thread ID, usually 0 for single core)
@@ -130,9 +167,6 @@ void app_main(void)
 
     ESP_LOGI(TAG, "Setting up for kernel boot...");
     ESP_LOGI(TAG, "hartid: %lu, dtb_addr: %lu", hartid, dtb_addr);
-
-    // Critical: Use the mapped virtual address, not the physical PSRAM address
-    void* kernel_entry = linux_load_addr;
 
     ESP_LOGI(TAG, "Kernel entry point: %p", kernel_entry);
 
